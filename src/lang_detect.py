@@ -3,10 +3,20 @@ import json
 import re
 import sys
 import unicodedata
+from typing import Dict, Any, List, Set, Tuple, Optional
 
 class LanguageDetector:
+    """
+    Deterministic language detector for short journaling snippets.
+    
+    Supports: English (en), Hindi (hi), Hinglish (hinglish), and Mixed (mixed).
+    Strategy: 
+      1. Unicode range detection for Script (Latin vs Devanagari).
+      2. Lexicon-based matching + Fuzzy Logic + N-gram patterns for Language.
+    """
+
     # Common English stopwords (expanded for better coverage)
-    EN_STOPWORDS = {
+    EN_STOPWORDS: Set[str] = {
         'the', 'is', 'at', 'which', 'on', 'and', 'a', 'an', 'in', 'to', 'of', 'for', 'it', 'this', 'that',
         'with', 'as', 'was', 'were', 'be', 'are', 'i', 'you', 'he', 'she', 'we', 'they', 'my', 'your',
         'his', 'her', 'our', 'their', 'but', 'or', 'so', 'if', 'then', 'than', 'just', 'very', 'really',
@@ -17,10 +27,10 @@ class LanguageDetector:
         'dinner', 'breakfast', 'slept', 'sleep', 'bed', 'early', 'late', 'gym', 'body', 'heavy', 'garam' # garam is not english, mistake in list? removing garam.
     }
     # Removing 'garam' from EN_STOPWORDS as it was a mistake while typing.
-    EN_STOPWORDS.remove('garam') if 'garam' in EN_STOPWORDS else None
+    if 'garam' in EN_STOPWORDS: EN_STOPWORDS.remove('garam')
 
     # Common Hindi words in Roman script (Hinglish)
-    HI_LATIN_STOPWORDS = {
+    HI_LATIN_STOPWORDS: Set[str] = {
         'hai', 'hain', 'ho', 'hun', 'hu', 'ki', 'ka', 'ke', 'ko', 'mein', 'me', 'aur', 'tatha', 'evam',
         'se', 'ne', 'par', 'liye', 'kya', 'kyun', 'kab', 'kahan', 'kaise', 'main', 'hum', 'tum', 'aap',
         'ye', 'woh', 'yeh', 'wo', 'tha', 'thi', 'ga', 'gi', 'ge', 'raha', 'rahi', 'rahe',
@@ -39,9 +49,18 @@ class LanguageDetector:
     if 'me' in HI_LATIN_STOPWORDS: HI_LATIN_STOPWORDS.remove('me')
 
     # Devanagari range
-    DEVANAGARI_RANGE = (0x0900, 0x097F)
+    DEVANAGARI_RANGE: Tuple[int, int] = (0x0900, 0x097F)
 
-    def detect(self, text):
+    def detect(self, text: str) -> Dict[str, Any]:
+        """
+        Main entry point for language detection.
+        
+        Args:
+            text: Input string snippet.
+            
+        Returns:
+            Dictionary containing 'primary_language', 'script', 'confidence', 'evidence'.
+        """
         if not text:
             return {
                 "id": None,
@@ -60,7 +79,8 @@ class LanguageDetector:
         
         return result
 
-    def _count_scripts(self, text):
+    def _count_scripts(self, text: str) -> Dict[str, int]:
+        """Counts characters in Latin vs Devanagari ranges."""
         counts = {'latin': 0, 'devanagari': 0, 'other': 0, 'total': 0}
         for char in text:
             if char.isspace():
@@ -73,27 +93,22 @@ class LanguageDetector:
             elif self.DEVANAGARI_RANGE[0] <= cp <= self.DEVANAGARI_RANGE[1]:
                 counts['devanagari'] += 1
             elif unicodedata.category(char).startswith('P') or unicodedata.category(char).startswith('N') or unicodedata.category(char).startswith('S'):
-                # Punctuation, Numbers, Symbols - treat as neutral or track separately if needed
-                # For now, adding to 'other' but we might exclude them from script decision if they dominate?
-                # Actually, let's track them but not let them sway 'latin' vs 'devanagari' too much.
-                # Let's count them as other for now.
+                # Punctuation/Numbers tracked as 'other' to avoid skewing small samples
                 counts['other'] += 1
             else:
                 counts['other'] += 1
         return counts
 
-    def _determine_script(self, counts, text_len):
+    def _determine_script(self, counts: Dict[str, int], text_len: int) -> str:
+        """Determines the dominant script or 'mixed' based on counts."""
         if counts['total'] == 0:
             return "other"
             
         lat_ratio = counts['latin'] / counts['total']
         dev_ratio = counts['devanagari'] / counts['total']
         
-        # If significant presence of both
+        # If significant presence of both (>2 chars to avoid noise)
         if counts['latin'] > 0 and counts['devanagari'] > 0:
-             # Just presence of one char shouldn't trigger mixed script if it's noise?
-             # Prompt: "Don’t rely only on presence of one Devanagari character"
-             # Let's say if we have at least 2 chars of each or > 5%?
              if counts['latin'] >= 2 and counts['devanagari'] >= 2:
                  return "mixed"
         
@@ -104,15 +119,19 @@ class LanguageDetector:
         
         return "other"
 
-    def _determine_language(self, text, script, counts):
+    def _determine_language(self, text: str, script: str, counts: Dict[str, int]) -> Dict[str, Any]:
+        """
+        Routing logic based on script.
+        Devanagari -> Hindi
+        Latin -> Needs deeper analysis (English vs Hinglish)
+        """
         evidence = {
             "n_tokens": 0,
             "script_counts": counts
         }
         
         if script == "devanagari":
-            # Almost certainly Hindi for this dataset
-            # Determine confidence based on length/noise
+            # High confidence if decent length
             conf = 0.9 if counts['devanagari'] > 3 else 0.5
             return {
                 "primary_language": "hi",
@@ -122,8 +141,6 @@ class LanguageDetector:
             }
 
         if script == "mixed":
-            # If script is mixed (Latin + Devanagari), language is 'mixed' by definition in prompt requirements?
-            # Prompt: "mixed — meaningful mixture of English + Hindi OR mixture of Latin + Devanagari"
             return {
                 "primary_language": "mixed",
                 "script": "mixed",
@@ -132,7 +149,6 @@ class LanguageDetector:
             }
             
         if script == "latin":
-            # Could be en, hinglish, mixed, or unknown
             return self._analyze_latin_text(text, evidence)
             
         # fallback for other/unknown script
@@ -144,7 +160,8 @@ class LanguageDetector:
         }
 
     @staticmethod
-    def _levenshtein(s1, s2):
+    def _levenshtein(s1: str, s2: str) -> int:
+        """Calculates Levenshtein edit distance between two strings."""
         if len(s1) < len(s2):
             return LanguageDetector._levenshtein(s2, s1)
         if len(s2) == 0:
@@ -162,8 +179,15 @@ class LanguageDetector:
         
         return previous_row[-1]
 
-    def _analyze_latin_text(self, text, evidence):
-        # Tokenize
+    def _analyze_latin_text(self, text: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyzes Latin script text to distinguish English vs Hinglish vs Mixed.
+        Uses:
+          - Stopword token matching
+          - Fuzzy matching (Levenshtein)
+          - N-gram pattern matching
+        """
+        # Tokenize (simple word boundary)
         tokens = [t.lower() for t in re.findall(r"\b\w+\b", text)]
         evidence['n_tokens'] = len(tokens)
         
@@ -179,17 +203,17 @@ class LanguageDetector:
         hi_hits = 0
         
         for t in tokens:
-            # Exact match check first (fast)
+            # Exact match check first (fast O(1))
             if t in self.EN_STOPWORDS:
                 en_hits += 1
-                continue # If it's English, assume it's not Hindi for now (simple logic)
+                continue # If it's English, assume it's not Hindi for simplicity
             
             if t in self.HI_LATIN_STOPWORDS:
                 hi_hits += 1
                 continue
 
-            # Fuzzy match for Hinglish words (slower but more robust)
-            # Only if token length > 2 to avoid matching 'to' with 'tu' etc. falsely
+            # Fuzzy match for Hinglish words (slower but Robust)
+            # Only if token length > 2 to avoid false positives on short words
             if len(t) > 2:
                 found_fuzzy = False
                 for sw in self.HI_LATIN_STOPWORDS:
@@ -238,7 +262,7 @@ class LanguageDetector:
         
         # Decision Logic
         
-        # Strong Hinglish signal
+        # Strong Hinglish signal (Hindi grammar markers are distinct)
         if hi_hits >= en_hits and hi_hits > 0:
             conf = 0.5 + min(hi_ratio, 0.5)
             # Boost confidence for fuzzy matches if they were found?
@@ -251,6 +275,7 @@ class LanguageDetector:
             
         # Strong English signal
         if en_hits > hi_hits:
+            # Check for Mixed Code-Switching (significant presence of both)
             if en_hits >= 2 and hi_hits >= 2:
                 conf = 0.8
                 return {
@@ -276,8 +301,8 @@ class LanguageDetector:
                     "evidence": evidence
                 }
 
-        # N-gram Analysis for context checks (e.g. if individual words failed)
-        # 2-grams
+        # N-gram Analysis fallback
+        # 2-grams to catch patterns like 'ki wajah'
         ngrams_2 = zip(tokens, tokens[1:])
         hinglish_patterns_2 = {('ki', 'wajah'), ('wajah', 'se'), ('ka', 'matlab'), ('ho', 'gaya')}
         

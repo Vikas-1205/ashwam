@@ -41,11 +41,22 @@ This tool handles short, noisy text (3-30 words) by using a multi-stage determin
     - Common short words that overlap (e.g., `me`, `the`) are excluded from the Hindi Latin list.
     - Levenshtein checks are length-thresholded to avoid false positives on very short words.
 
-## Tradeoffs & Design Decisions
+## Design Analysis & Tradeoffs
 
--   **Deterministic Lists vs. ML**: Used specific lexicons + fuzzy logic.
-    -   *Why?* Fast, predictable, zero-dependency (standard lib only).
-    -   *Tradeoff*: Harder to generalize to unseen vocab, but Levenshtein mitigates typo issues.
+### 1. Deterministic vs. Probabilistic (ML)
+*   **Decision**: I chose a **deterministic approach** (Lexicons + Heuristics) over Machine Learning (e.g., FastText, Naive Bayes).
+*   **Reasoning**: 
+    *   **Data Scarcity**: The problem statement implies a "fixed synthetic dataset" and "lightweight" requirement. Training a robust model on small/synthetic data often leads to overfitting.
+    *   **Predictability**: Rule-based systems are easier to debug. "Why did it say Hinglish?" -> "Because accurate token hits > English token hits".
+    *   **Performance**: Zero external dependencies (no `numpy`, `torch`) means instant startup and minimal footprint.
+*   **Tradeoff**: Generalization is harder. A new slang word won't be caught unless added to the list, whereas embeddings might catch semantically similar words. I mitigated this via **Levenshtein Fuzzy Matching**.
+
+### 2. Handling Ambiguity (Hinglish vs. English)
+*   **Challenge**: Words like "to", "is", "me" exist in both languages (or phonetically similar).
+*   **Solution**: 
+    *   Removed overlapping high-frequency short words from the Hindi lexicon to reduce false positives.
+    *   Implemented **N-gram analysis** to catch Hindi grammar patterns (`ki wajah se`) even if individual words are ambiguous.
+    *   **Prioritized Hindi Grammar**: Since Hinglish often uses English nouns ("meeting", "gym"), the presence of Hindi verbs/particles (`hai`, `ka`, `mein`) is a stronger discriminator than English nouns.
 
 ## Confidence Score
 
