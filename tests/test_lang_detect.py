@@ -62,12 +62,25 @@ class TestLanguageDetector(unittest.TestCase):
     def test_code_switching_mixed(self):
         # "Work was intense. Aaj dimag garam hai."
         text = "Work was intense. Aaj dimag garam hai."
-        # En hits: was (1)
-        # Hi hits: aaj, dimag, garam, hai (4)
-        # Result should be Hinglish or Mixed.
-        # Logic says if Hi >= En -> Hinglish.
         result = self.detector.detect(text)
         self.assertIn(result['primary_language'], ['hinglish', 'mixed'])
+
+    def test_fuzzy_hinglish(self):
+        # "Muje" instead of "Mujhe" -> should be detected as Hinglish via fuzzy match
+        text = "Muje bahut anxiety ho rahi hai"
+        result = self.detector.detect(text)
+        self.assertEqual(result['primary_language'], 'hinglish')
+        # Check evidence to ensure it was counted as a hit
+        self.assertTrue(result['evidence']['hi_hits'] >= 2) # Muje, hai
+
+    def test_fuzzy_variation(self):
+        # "ni" -> "na" or "nahi"? "ni" is short, might need threshold 1.
+        # "ni" is length 2. The code skips fuzzy for len <= 2.
+        # Let's try "nhi" (len 3), match with "nahi" (len 4). Dist 1.
+        text = "Wo aayega nhi"
+        result = self.detector.detect(text)
+        self.assertEqual(result['primary_language'], 'hinglish')
+
 
 if __name__ == '__main__':
     unittest.main()

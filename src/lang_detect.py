@@ -143,6 +143,25 @@ class LanguageDetector:
             "evidence": evidence
         }
 
+    @staticmethod
+    def _levenshtein(s1, s2):
+        if len(s1) < len(s2):
+            return LanguageDetector._levenshtein(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
+
     def _analyze_latin_text(self, text, evidence):
         # Tokenize
         tokens = [t.lower() for t in re.findall(r"\b\w+\b", text)]
@@ -160,10 +179,34 @@ class LanguageDetector:
         hi_hits = 0
         
         for t in tokens:
+            # Exact match check first (fast)
             if t in self.EN_STOPWORDS:
                 en_hits += 1
+                continue # If it's English, assume it's not Hindi for now (simple logic)
+            
             if t in self.HI_LATIN_STOPWORDS:
                 hi_hits += 1
+                continue
+
+            # Fuzzy match for Hinglish words (slower but more robust)
+            # Only if token length > 2 to avoid matching 'to' with 'tu' etc. falsely
+            if len(t) > 2:
+                found_fuzzy = False
+                for sw in self.HI_LATIN_STOPWORDS:
+                    # heuristic: only check words of similar length
+                    if abs(len(token := t) - len(sw)) > 2: # optimization
+                         continue
+                    
+                    dist = self._levenshtein(t, sw)
+                    # Allow dist 1 for short words (3-5 chars), dist 2 for long (>5)
+                    threshold = 1 if len(sw) <= 5 else 2
+                    
+                    if dist <= threshold:
+                        hi_hits += 1
+                        found_fuzzy = True
+                        break # Count only once
+                if found_fuzzy:
+                    continue
         
         evidence['en_hits'] = en_hits
         evidence['hi_hits'] = hi_hits
@@ -172,13 +215,7 @@ class LanguageDetector:
         
         # If very short and no hits
         if total_hits == 0:
-            # Check for generic English words that might not be in stopwords but are English
-            # Hard to do without huge dict. 
-            # If it's just "ok" or "123", might be unknown.
-            # "ok" is often english. "haan" is hindi.
-            # Let's add specific short text overrides or heuristic
             if len(tokens) <= 2:
-                # Naive guess?
                 return {
                     "primary_language": "unknown",
                     "script": "latin",
@@ -186,9 +223,6 @@ class LanguageDetector:
                     "evidence": evidence
                 }
             
-            # If length is decent but no hits, low confidence unknown or default to En?
-            # Prompt says "Don’t label everything unknown".
-            # Synthetic dataset is English/Hindi context.
             return {
                 "primary_language": "unknown",
                 "script": "latin",
@@ -207,6 +241,7 @@ class LanguageDetector:
         # Strong Hinglish signal
         if hi_hits >= en_hits and hi_hits > 0:
             conf = 0.5 + min(hi_ratio, 0.5)
+            # Boost confidence for fuzzy matches if they were found?
             return {
                 "primary_language": "hinglish",
                 "script": "latin",
@@ -216,18 +251,6 @@ class LanguageDetector:
             
         # Strong English signal
         if en_hits > hi_hits:
-            # If we have some Hindi hits, might be mixed?
-            # "Work was intense. Aaj dimag garam hai."
-            # en_hits: Work(1), was(1), intense(0). Aaj(1_hi), dimag(1_hi), garam(1_hi), hai(1_hi). 
-            # Oh, wait. My stopwords list for En doesn't have 'intense'.
-            # My logic is: if hi_hits >= en_hits -> hinglish.
-            # In "Work was intense...", hits might be En: [was]. Hi: [aaj, dimag, garam, hai]. 
-            # So Hi count (4) > En count (1). -> Hinglish.
-            # This seems correct for code-switching which flows into Hinglish.
-            
-            # What about mixed? "meaningful mixture of English + Hindi". 
-            # Maybe if both counts are significant?
-            # e.g. En hits > 2 AND Hi hits > 2?
             if en_hits >= 2 and hi_hits >= 2:
                 conf = 0.8
                 return {
@@ -238,7 +261,6 @@ class LanguageDetector:
                 }
             
             conf = 0.5 + min(en_ratio, 0.5)
-            # Check if it was purely English (hi_hits == 0)
             if hi_hits == 0:
                  return {
                     "primary_language": "en",
@@ -247,20 +269,25 @@ class LanguageDetector:
                     "evidence": evidence
                 }
             else:
-                # Mostly English but some Hindi?
-                # "Lunch: dal chawal." -> En: [lunch]. Hi: [dal, chawal] (if in dict). 
-                # If 'dal', 'chawal' not in dict, then Hi hits = 0.
-                # If Hi hits > 0 but En is dominant?
-                # "I ate dal." -> En: [i, ate]. Hi: [dal].
-                # Maybe stick to 'en' if Hi signal is weak, or 'hinglish' if grammar is Hindi?
-                # The class 'hinglish' usually implies Hindi grammar.
-                # The class 'mixed' implies sentences of both.
-                
                 return {
                     "primary_language": "en",
                     "script": "latin",
                     "confidence": round(conf, 2),
                     "evidence": evidence
+                }
+
+        # N-gram Analysis for context checks (e.g. if individual words failed)
+        # 2-grams
+        ngrams_2 = zip(tokens, tokens[1:])
+        hinglish_patterns_2 = {('ki', 'wajah'), ('wajah', 'se'), ('ka', 'matlab'), ('ho', 'gaya')}
+        
+        for bg in ngrams_2:
+             if bg in hinglish_patterns_2:
+                 return {
+                    "primary_language": "hinglish",
+                    "script": "latin",
+                    "confidence": 0.85,
+                    "evidence": {"msg": "ngram pattern match", **evidence}
                 }
 
         return {
