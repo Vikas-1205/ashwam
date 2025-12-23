@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+lang.jsonl
+debug_detect.py
